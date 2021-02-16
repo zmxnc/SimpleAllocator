@@ -66,21 +66,26 @@ template <class Object>
 void Allocator<Object> :: clear()
   {
   // Delete all Allocator_cache instances, save for the original one
-  while (previous() != nullptr)
+  while (true)
     {
     // Call the destructor for the allocated objects
-    for (auto pos = start(); pos != cursor(); pos += sizeof (Object))
+    for (char* pos = (char*)&start(); pos != cursor(); pos += sizeof (Object))
       ((Object*)pos)->~Object();
-    
-    auto tmp = previous();
-    free(cache);
-    cache = tmp;
+
+    if (previous() == nullptr)
+      break;
+    else
+      {
+      auto tmp = previous();
+      free(cache);
+      cache = tmp;
+      }
     }
   // Reset the original instance
   // The data is not modified, and Objects allocated in the first
   // cache will remain accessible (to avoid this, we could reallocate the original
   // cache as well, at a small performance cost)
-  cursor() = start();
+  cursor() = (char*)&start();
   }
 
 template <class Object>
