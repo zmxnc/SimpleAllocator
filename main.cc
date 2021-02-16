@@ -12,6 +12,7 @@ int main()
   auto& c = allocator.create (5);
   c = a + b;
   cerr << a << " + " << b << " = " << c << endl;
-  allocator.empty();
+  cerr << (long int)&a << " + " << (long int)&b << " = " << (long int)&c << endl;
+  allocator.clear();
   return 0;
 }
