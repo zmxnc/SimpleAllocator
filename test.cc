@@ -32,7 +32,7 @@ int main()
   assert (b == 2);
   assert (c == (a+b));
   allocator.clear();
-  cerr << "Basic test :      OK\n";
+  cerr << "Basic test :           OK\n";
   }
 
   // Test that destructors are working properly
@@ -46,8 +46,24 @@ int main()
   assert (TestObj::counter == 2);
   allocator.clear();
   assert (TestObj::counter == 0);
-  cerr << "Destructor test : OK\n";
+  cerr << "Destructor test :      OK\n";
   }
 
+  // Test Generic_allocator
+  {
+  Generic_allocator allocator;
+  auto& a = allocator.create<TestObj>();
+  auto& b = allocator.create<int>(1);
+  auto& c = allocator.create<TestObj>();
+
+  assert (a.id == 1);
+  assert (b == 1);
+  assert (c.id == 2);
+  assert (TestObj::counter == 2);
+  allocator.clear();
+  assert (TestObj::counter == 0);
+  cerr << "Generic_allocator test : OK\n";
+  }
+  
   return 0;
 }
