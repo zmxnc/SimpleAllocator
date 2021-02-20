@@ -9,6 +9,37 @@
 #include <cstring>
 
 
+// Handles constructing/destruction our cache,
+// maintaining the addresses needed by the allocator
+class Allocator_cache
+  {
+  public:
+
+  static Allocator_cache* construct (size_t, Allocator_cache* = nullptr);
+  static void destruct (Allocator_cache*);
+  
+  // Start of the memory available for allocations
+  char *start;
+  // End of the memory available for allocations
+  void *end;
+  // Address of the previous cache
+  Allocator_cache *previous;
+  // Position of the curson in the current cache
+  char *cursor;
+
+  private:
+
+  // Really should be constexpr, but can't since it needs to be defined inline,
+  // and also after the class is fully defined
+  static const size_t sizeof_this;
+  
+  // Hidden constructor: allocation should only be handled by ::construct()
+  Allocator_cache (char*, size_t, Allocator_cache*);
+  Allocator_cache() = default;
+  };
+
+constexpr size_t Allocator_cache :: sizeof_this = sizeof(Allocator_cache) + alignof(Allocator_cache);
+
 class Allocator_base
   {
   public:
@@ -22,17 +53,7 @@ class Allocator_base
   protected:
   
   // The data cache currently in use
-  void *cache;
-  
-  void allocate_cache();
-  // Start of the memory available for allocations
-  void*& start();
-  // End of the memory available for allocations
-  void*& end();
-  // Address of the previous cache
-  void*& previous();
-  // Position of the curson in the current cache
-  void*& cursor();
+  Allocator_cache *cache;
   };
 
 
@@ -41,6 +62,8 @@ class Allocator_base
 template <class Object>
 class Allocator : public Allocator_base
   {
+  static constexpr auto sizeof_obj = sizeof(Object) + alignof(Object);
+  
   public:
   Allocator();
   ~Allocator();
@@ -98,36 +121,32 @@ class Obj_wrapper
 
 
 
-Allocator_base :: ~Allocator_base()
-  {  }
-
-void Allocator_base :: allocate_cache()
+Allocator_cache* Allocator_cache :: construct (size_t sizeof_cache, Allocator_cache* old)
   {
-  auto old    = cache;
-  cache       = malloc (cache_size);
-  previous()  = old;
-  cursor()    = &start();
-  end()       = cache + cache_size;
+  auto addr = (char*) malloc (sizeof_cache + sizeof_this);
+  
+  return (Allocator_cache*) new (addr) Allocator_cache (addr, sizeof_cache, old);
   }
 
-void*& Allocator_base :: start()
-  { return *((void**)cache + 3); }
+void Allocator_cache :: destruct (Allocator_cache* cache)
+  { free (cache); }
 
-void*& Allocator_base :: end()
-  { return *((void**)cache + 2); }
+Allocator_cache :: Allocator_cache (char *addr, size_t sizeof_cache, Allocator_cache *old) :
+  start (addr + sizeof_this),
+  end (start + sizeof_cache),
+  previous (old),
+  cursor (start)
+  {  }
 
-void*& Allocator_base :: previous()
-  { return *((void**)cache + 0); }
 
-void*& Allocator_base :: cursor()
-  { return *((void**)cache + 1); }
-
+Allocator_base :: ~Allocator_base()
+  {  }
 
 
 template <class Object>
 Allocator<Object> :: Allocator() :
   Allocator_base()
-  { allocate_cache(); }
+  { cache = Allocator_cache::construct (cache_size); }
 
 template <class Object>
 Allocator<Object> :: ~Allocator()
@@ -140,12 +159,12 @@ Object& Allocator<Object> :: create (Args ... args)
   if (sizeof (Object) > cache_size)
     throw std::bad_alloc();
   
-  if (cursor() == end())
-    allocate_cache();
+  if (cache->cursor == cache->end)
+    cache = Allocator_cache::construct (cache_size, cache);
   
   // Placement new: allocates Object in place avoiding unnecessary memory movements
-  auto tmp = new (cursor()) Object (std::forward<Args> (args)...);
-  cursor() += sizeof (Object);
+  auto tmp = new (cache->cursor) Object (std::forward<Args> (args)...);
+  cache->cursor += sizeof_obj;
   return (Object&)*tmp;
   }
 
@@ -156,15 +175,15 @@ void Allocator<Object> :: clear()
   while (true)
     {
     // Call the destructor for the allocated objects
-    for (char* pos = (char*)&start(); pos != cursor(); pos += sizeof (Object))
+    for (auto pos = cache->start; pos != cache->cursor; pos += sizeof_obj)
       ((Object*)pos)->~Object();
 
-    if (previous() == nullptr)
+    if (cache->previous == nullptr)
       break;
     else
       {
-      auto tmp = previous();
-      free(cache);
+      auto tmp = cache->previous;
+      Allocator_cache::destruct (cache);
       cache = tmp;
       }
     }
@@ -172,12 +191,12 @@ void Allocator<Object> :: clear()
   // The data is not modified, and Objects allocated in the first
   // cache will remain accessible (to avoid this, we could reallocate or
   // overwrite the original cache as well, at a small performance cost)
-  cursor() = (char*)&start();
+  cache->cursor = cache->start;
   }
 
-
+/*
 Generic_allocator :: Generic_allocator()
-  { allocate_cache(); }
+  { cache = Allocator_cache::construct (cache_size); }
 Generic_allocator :: ~Generic_allocator()
   { clear(); }
 
@@ -187,29 +206,33 @@ Object& Generic_allocator :: create (Args ... args)
   // Member function pointers can have variable size ->
   // it needs to be stored before the mem_fn_ptr
   // to retrieve the object start position at deallocation time
-  const uint8_t destructor_ptr_size = sizeof(&Obj_wrapper<Object>::destruct);
-  const uint8_t wrapper_size        = sizeof(Obj_wrapper<Object>) + alignof(Obj_wrapper<Object>);
+  constexpr uint8_t destructor_ptr_size = sizeof(&Obj_wrapper<Object>::destruct);
+  constexpr uint8_t wrapper_size        = sizeof(Obj_wrapper<Object>) + alignof(Obj_wrapper<Object>);
   if (sizeof(short) + destructor_ptr_size + wrapper_size > cache_size)
     throw std::bad_alloc();
   
-  if (cursor() == end())
-    allocate_cache();
+  if (cache->cursor == cache->end)
+    cache = Allocator_cache::construct (cache_size, cache);
 
+  // Check that the objects are not too big to break our
+  // internal cache addressing
   static_assert (wrapper_size        <= std::numeric_limits<uint8_t>::max());
   static_assert (destructor_ptr_size <= std::numeric_limits<uint8_t>::max());
+
+  auto destructor_ptr = &Obj_wrapper<Object>::destruct;
   
   // Store the fn pointer size
-  memcpy (destructor_ptr_size, cursor(), sizeof(uint8_t));
-  cursor() += sizeof(uint8_t);
+  memcpy (cache->cursor, &destructor_ptr_size, sizeof(uint8_t));
+  cache->cursor += sizeof(uint8_t);
   // Store the object size
-  memcpy (wrapper_size, cursor(), sizeof(uint8_t));
-  cursor() += sizeof(uint8_t);
+  memcpy (cache->cursor, &wrapper_size,        sizeof(uint8_t));
+  cache->cursor += sizeof(uint8_t);
   // Store the fn pointer right after
-  memcpy (&Obj_wrapper<Object>::destruct, cursor(), destructor_ptr_size);
-  cursor() += destructor_ptr_size;
+  memcpy (cache->cursor, &destructor_ptr,      destructor_ptr_size);
+  cache->cursor += destructor_ptr_size;
   // Placement new: allocates Object in place avoiding unnecessary memory movements
-  auto tmp = new (cursor()) Object (std::forward<Args> (args)...);
-  cursor() += wrapper_size;
+  auto tmp = new (cache->cursor) Object (std::forward<Args> (args)...);
+  cache->cursor += wrapper_size;
   return (Object&)*tmp;
   }
 
@@ -219,25 +242,25 @@ void Generic_allocator :: clear()
   while (true)
     {
     // Call the destructor for the allocated objects
-    for (char* pos = (char*)&start(); pos != cursor();)
+    for (auto pos = cache->start; pos != cache->cursor;)
       {
       auto destructor_ptr_size = (uint8_t)*pos;
       pos += sizeof(uint8_t);
       auto wrapper_size = (uint8_t)*pos;
       pos += sizeof(uint8_t);
-      void *destructor_ptr = pos;
+      void (*destructor_ptr) = pos;
       pos += destructor_ptr_size;
       auto wrapper_ptr = pos;
       pos += wrapper_size;
       (*destructor_ptr) (wrapper_ptr);
       }
 
-    if (previous() == nullptr)
+    if (cache->previous == nullptr)
       break;
     else
       {
-      auto tmp = previous();
-      free(cache);
+      auto tmp = cache->previous;
+      Allocator_cache::destruct (cache);
       cache = tmp;
       }
     }
@@ -245,7 +268,7 @@ void Generic_allocator :: clear()
   // The data is not modified, and Objects allocated in the first
   // cache will remain accessible (to avoid this, we could reallocate or
   // overwrite the original cache as well, at a small performance cost)
-  cursor() = (char*)&start();
-  }
+  cache->cursor = cache->start;
+  }*/
 
 #endif

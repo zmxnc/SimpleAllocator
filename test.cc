@@ -50,7 +50,7 @@ int main()
   }
 
   // Test Generic_allocator
-  {
+  /*{
   Generic_allocator allocator;
   auto& a = allocator.create<TestObj>();
   auto& b = allocator.create<int>(1);
@@ -63,7 +63,7 @@ int main()
   allocator.clear();
   assert (TestObj::counter == 0);
   cerr << "Generic_allocator test : OK\n";
-  }
+  }*/
   
   return 0;
 }
