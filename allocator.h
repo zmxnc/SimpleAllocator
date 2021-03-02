@@ -69,7 +69,7 @@ class Allocator : public Allocator_base
   ~Allocator();
 
   template <class ... Args>
-  Object& create (Args ... args);
+  Object& create (Args&& ... args);
   void clear() override;
   };
 
@@ -87,38 +87,24 @@ class Generic_allocator : public Allocator_base
   ~Generic_allocator();
 
   template <class Object, class ... Args>
-  Object& create (Args ... args);
+  Object& create (Args&& ... args);
   void clear() override;
   };
 
 
-// Wrapper class for objects in the generic allocator.
+using void_fn_ptr = void (*)(void*);
+
+// Destructor wrapper for objects in the generic allocator
 // This is needed because the destructor's address cannot be taken
 // the way a normal function's can, because it's allowed by C++ standard
 // not to follow normal function ABI. By wrapping it in a template function,
-// the compiler generates the proper calling code and a member function address
+// the compiler generates the proper calling code and a function address
 // that can be taken and used normally.
 template <class Object>
-class Obj_wrapper
+void destructor_wrapper (void* obj)
   {
-  Object obj;
-  
-  public:
-  template <class ... Args>
-  Obj_wrapper (Args ... args) :
-    Object (std::forward(args)...)
-    {  }
-
-  void destruct()
-    { obj.~Object(); }
-
-  private:
-
-  // Destructor should never be called, the Object can only be destructed by calling
-  // Obj_wrapper::destruct()
-  ~Obj_wrapper() = default;
-  };
-
+  ((Object*)obj)->~Object();
+  }
 
 
 Allocator_cache* Allocator_cache :: construct (size_t sizeof_cache, Allocator_cache* old)
@@ -154,7 +140,7 @@ Allocator<Object> :: ~Allocator()
 
 template <class Object>
 template <class ... Args>
-Object& Allocator<Object> :: create (Args ... args)
+Object& Allocator<Object> :: create (Args&& ... args)
   {
   if (sizeof (Object) > cache_size)
     throw std::bad_alloc();
@@ -194,21 +180,21 @@ void Allocator<Object> :: clear()
   cache->cursor = cache->start;
   }
 
-/*
+
 Generic_allocator :: Generic_allocator()
   { cache = Allocator_cache::construct (cache_size); }
 Generic_allocator :: ~Generic_allocator()
   { clear(); }
 
 template <class Object, class ... Args>
-Object& Generic_allocator :: create (Args ... args)
+Object& Generic_allocator :: create (Args&& ... args)
   {
   // Member function pointers can have variable size ->
   // it needs to be stored before the mem_fn_ptr
   // to retrieve the object start position at deallocation time
-  constexpr uint8_t destructor_ptr_size = sizeof(&Obj_wrapper<Object>::destruct);
-  constexpr uint8_t wrapper_size        = sizeof(Obj_wrapper<Object>) + alignof(Obj_wrapper<Object>);
-  if (sizeof(short) + destructor_ptr_size + wrapper_size > cache_size)
+  constexpr uint8_t destructor_ptr_size = sizeof(void_fn_ptr) + alignof(void_fn_ptr);
+  constexpr uint8_t object_size         = sizeof(Object)      + alignof(Object);
+  if (sizeof(short) + destructor_ptr_size + object_size > cache_size)
     throw std::bad_alloc();
   
   if (cache->cursor == cache->end)
@@ -216,23 +202,24 @@ Object& Generic_allocator :: create (Args ... args)
 
   // Check that the objects are not too big to break our
   // internal cache addressing
-  static_assert (wrapper_size        <= std::numeric_limits<uint8_t>::max());
   static_assert (destructor_ptr_size <= std::numeric_limits<uint8_t>::max());
+  static_assert (object_size         <= std::numeric_limits<uint8_t>::max());
 
-  auto destructor_ptr = &Obj_wrapper<Object>::destruct;
+  void_fn_ptr destructor_ptr = destructor_wrapper<Object>;
   
   // Store the fn pointer size
   memcpy (cache->cursor, &destructor_ptr_size, sizeof(uint8_t));
-  cache->cursor += sizeof(uint8_t);
-  // Store the object size
-  memcpy (cache->cursor, &wrapper_size,        sizeof(uint8_t));
+  cache->cursor += sizeof(uint8_t); 
+  // Store the obj size
+  memcpy (cache->cursor, &object_size, sizeof(uint8_t));
   cache->cursor += sizeof(uint8_t);
   // Store the fn pointer right after
   memcpy (cache->cursor, &destructor_ptr,      destructor_ptr_size);
   cache->cursor += destructor_ptr_size;
   // Placement new: allocates Object in place avoiding unnecessary memory movements
   auto tmp = new (cache->cursor) Object (std::forward<Args> (args)...);
-  cache->cursor += wrapper_size;
+  
+  cache->cursor += object_size;
   return (Object&)*tmp;
   }
 
@@ -244,15 +231,15 @@ void Generic_allocator :: clear()
     // Call the destructor for the allocated objects
     for (auto pos = cache->start; pos != cache->cursor;)
       {
-      auto destructor_ptr_size = (uint8_t)*pos;
+      auto destructor_ptr_size = *(uint8_t*)pos;
       pos += sizeof(uint8_t);
-      auto wrapper_size = (uint8_t)*pos;
+      auto object_size = *(uint8_t*)pos;
       pos += sizeof(uint8_t);
-      void (*destructor_ptr) = pos;
+      void_fn_ptr destructor_ptr = *(void_fn_ptr*)pos;
       pos += destructor_ptr_size;
-      auto wrapper_ptr = pos;
-      pos += wrapper_size;
-      (*destructor_ptr) (wrapper_ptr);
+      void* obj_ptr = *(void**)pos;
+      pos += object_size;
+      (*destructor_ptr) (pos);
       }
 
     if (cache->previous == nullptr)
@@ -269,6 +256,6 @@ void Generic_allocator :: clear()
   // cache will remain accessible (to avoid this, we could reallocate or
   // overwrite the original cache as well, at a small performance cost)
   cache->cursor = cache->start;
-  }*/
+  }
 
 #endif
