@@ -35,7 +35,6 @@ class Allocator_cache
   
   // Hidden constructor: allocation should only be handled by ::construct()
   Allocator_cache (char*, size_t, Allocator_cache*);
-  Allocator_cache() = default;
   };
 
 constexpr size_t Allocator_cache :: sizeof_this = sizeof(Allocator_cache) + alignof(Allocator_cache);
@@ -45,7 +44,6 @@ class Allocator_base
   public:
   
   unsigned int cache_size = 2048;
-  Allocator_base() = default;
   virtual ~Allocator_base() = 0;
 
   virtual void clear() = 0;
@@ -74,24 +72,6 @@ class Allocator : public Allocator_base
   };
 
 
-// This is the generic implementation
-// Allows allocation of any class (as long as
-// it fits in the cache_size)
-// Has a slight performance penalty, as it requires to
-// store a pointer to the destructor of each object
-// and the size of the object
-class Generic_allocator : public Allocator_base
-  {
-  public:
-  Generic_allocator();
-  ~Generic_allocator();
-
-  template <class Object, class ... Args>
-  Object& create (Args&& ... args);
-  void clear() override;
-  };
-
-
 using void_fn_ptr = void (*)(void*);
 
 // Destructor wrapper for objects in the generic allocator
@@ -105,6 +85,47 @@ void destructor_wrapper (void* obj)
   {
   ((Object*)obj)->~Object();
   }
+
+// This class is used by generic allocator to mantain 
+class Obj_wrapper
+  {
+  public:
+  const uint8_t sizeof_obj;
+  const void_fn_ptr destructor_ptr;
+
+  // Requires an Object* as it's the only way to communicate
+  // to the compiler the type of Obj.
+  //It isn't used (it's enough to pass a nullptr cast to the Obj type)
+  // and should be optimized out by the compiler
+  template <class Obj, class ... Args>
+  Obj_wrapper (Obj*, Args&& ... args);
+  ~Obj_wrapper();
+
+  void* obj_ptr()
+    { return (char*)this + sizeof(Obj_wrapper) + alignof(Obj_wrapper); }
+  };
+
+// This is the generic implementation
+// Allows allocation of any class (as long as
+// it fits in the cache_size)
+// Has a slight performance penalty, as it requires to
+// store a pointer to the destructor of each object
+// and the size of the object
+class Generic_allocator : public Allocator_base
+  {
+  static constexpr auto sizeof_wrapper = sizeof(Obj_wrapper) + alignof(Obj_wrapper);
+  
+  public:
+  Generic_allocator();
+  ~Generic_allocator();
+
+  template <class Object, class ... Args>
+  Object& create (Args&& ... args);
+  void clear() override;
+  };
+
+
+
 
 
 Allocator_cache* Allocator_cache :: construct (size_t sizeof_cache, Allocator_cache* old)
@@ -142,10 +163,10 @@ template <class Object>
 template <class ... Args>
 Object& Allocator<Object> :: create (Args&& ... args)
   {
-  if (sizeof (Object) > cache_size)
+  if (sizeof_obj > cache_size)
     throw std::bad_alloc();
   
-  if (cache->cursor == cache->end)
+  if (cache->cursor + sizeof_obj >= cache->end)
     cache = Allocator_cache::construct (cache_size, cache);
   
   // Placement new: allocates Object in place avoiding unnecessary memory movements
@@ -189,38 +210,16 @@ Generic_allocator :: ~Generic_allocator()
 template <class Object, class ... Args>
 Object& Generic_allocator :: create (Args&& ... args)
   {
-  // Member function pointers can have variable size ->
-  // it needs to be stored before the mem_fn_ptr
-  // to retrieve the object start position at deallocation time
-  constexpr uint8_t destructor_ptr_size = sizeof(void_fn_ptr) + alignof(void_fn_ptr);
-  constexpr uint8_t object_size         = sizeof(Object)      + alignof(Object);
-  if (sizeof(short) + destructor_ptr_size + object_size > cache_size)
+  auto sizeof_obj     = sizeof(Object)      + alignof(Object);
+  if (sizeof_wrapper + sizeof_obj > cache_size)
     throw std::bad_alloc();
   
-  if (cache->cursor == cache->end)
+  if (cache->cursor + sizeof_wrapper + sizeof_obj >= cache->end)
     cache = Allocator_cache::construct (cache_size, cache);
-
-  // Check that the objects are not too big to break our
-  // internal cache addressing
-  static_assert (destructor_ptr_size <= std::numeric_limits<uint8_t>::max());
-  static_assert (object_size         <= std::numeric_limits<uint8_t>::max());
-
-  void_fn_ptr destructor_ptr = destructor_wrapper<Object>;
   
-  // Store the fn pointer size
-  memcpy (cache->cursor, &destructor_ptr_size, sizeof(uint8_t));
-  cache->cursor += sizeof(uint8_t); 
-  // Store the obj size
-  memcpy (cache->cursor, &object_size, sizeof(uint8_t));
-  cache->cursor += sizeof(uint8_t);
-  // Store the fn pointer right after
-  memcpy (cache->cursor, &destructor_ptr,      destructor_ptr_size);
-  cache->cursor += destructor_ptr_size;
-  // Placement new: allocates Object in place avoiding unnecessary memory movements
-  auto tmp = new (cache->cursor) Object (std::forward<Args> (args)...);
-  
-  cache->cursor += object_size;
-  return (Object&)*tmp;
+  auto tmp = new (cache->cursor) Obj_wrapper ((Object*)nullptr, std::forward<Args> (args)...);
+  cache->cursor += sizeof_wrapper + sizeof_obj;
+  return *(Object*)tmp->obj_ptr();
   }
 
 void Generic_allocator :: clear()
@@ -231,15 +230,9 @@ void Generic_allocator :: clear()
     // Call the destructor for the allocated objects
     for (auto pos = cache->start; pos != cache->cursor;)
       {
-      auto destructor_ptr_size = *(uint8_t*)pos;
-      pos += sizeof(uint8_t);
-      auto object_size = *(uint8_t*)pos;
-      pos += sizeof(uint8_t);
-      void_fn_ptr destructor_ptr = *(void_fn_ptr*)pos;
-      pos += destructor_ptr_size;
-      void* obj_ptr = *(void**)pos;
-      pos += object_size;
-      (*destructor_ptr) (pos);
+      auto obj_wrapper = (Obj_wrapper*)pos;
+      pos += sizeof_wrapper + obj_wrapper->sizeof_obj;
+      obj_wrapper->~Obj_wrapper();
       }
 
     if (cache->previous == nullptr)
@@ -256,6 +249,22 @@ void Generic_allocator :: clear()
   // cache will remain accessible (to avoid this, we could reallocate or
   // overwrite the original cache as well, at a small performance cost)
   cache->cursor = cache->start;
+  }
+
+
+template <class Obj, class ... Args>
+Obj_wrapper :: Obj_wrapper (Obj*, Args&& ... args) :
+  sizeof_obj (sizeof(Obj) + alignof (Obj)),
+  destructor_ptr (destructor_wrapper<Obj>)
+  {
+  // Check that the object's size is not bigger than what our size variable allows for
+  static_assert (sizeof(Obj) + alignof (Obj) <= std::numeric_limits<uint8_t>::max());
+  new (obj_ptr()) Obj (std::forward<Args>(args)...);
+  }
+
+Obj_wrapper :: ~Obj_wrapper()
+  {
+  (*destructor_ptr) (obj_ptr());
   }
 
 #endif
