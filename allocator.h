@@ -13,6 +13,15 @@
 // ONE #include "allocator.h" needs to be preceeded by #define ALLOCATOR_IMPLEMENTATION
 
 
+// If exceptions are not supported in the current build, an allocation
+// failure will cause the program to abort()
+// This exists to allow compilation with -fno-exceptions (clang++) or similar
+#ifdef __cpp_exceptions
+  #define throw_or_abort(exception) throw exception;
+#else
+  #define throw_or_abort(exception) abort();
+#endif
+
 
 // Handles constructing/destruction our cache,
 // maintaining the addresses needed by the allocator
@@ -144,7 +153,7 @@ template <class ... Args>
 Object& Allocator<Object> :: create (Args&& ... args)
   {
   if (sizeof_obj > cache_size)
-    throw std::bad_alloc();
+    throw_or_abort (std::bad_alloc());
   
   if (cache->cursor + sizeof_obj >= cache->end)
     cache = Allocator_cache::construct (cache_size, cache);
@@ -187,7 +196,7 @@ Object& Generic_allocator :: create (Args&& ... args)
   {
   auto sizeof_obj     = sizeof(Object)      + alignof(Object);
   if (sizeof_wrapper + sizeof_obj > cache_size)
-    throw std::bad_alloc();
+    throw_or_abort (std::bad_alloc());
   
   if (cache->cursor + sizeof_wrapper + sizeof_obj >= cache->end)
     cache = Allocator_cache::construct (cache_size, cache);
