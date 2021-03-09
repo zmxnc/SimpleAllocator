@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <string>
 
+#define ALLOCATOR_IMPLEMENTATION
 #include "allocator.h"
 
 using namespace std;

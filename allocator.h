@@ -9,6 +9,11 @@
 #include <cstring>
 
 
+// To avoid duplicate function definitions if the header is included in multiple files,
+// ONE #include "allocator.h" needs to be preceeded by #define ALLOCATOR_IMPLEMENTATION
+
+
+
 // Handles constructing/destruction our cache,
 // maintaining the addresses needed by the allocator
 class Allocator_cache
@@ -101,8 +106,7 @@ class Obj_wrapper
   Obj_wrapper (Obj*, Args&& ... args);
   ~Obj_wrapper();
 
-  void* obj_ptr()
-    { return (char*)this + sizeof(Obj_wrapper) + alignof(Obj_wrapper); }
+  void* obj_ptr();
   };
 
 // This is the generic implementation
@@ -124,30 +128,6 @@ class Generic_allocator : public Allocator_base
   void clear() override;
   };
 
-
-
-
-
-Allocator_cache* Allocator_cache :: construct (size_t sizeof_cache, Allocator_cache* old)
-  {
-  auto addr = (char*) malloc (sizeof_cache + sizeof_this);
-  
-  return (Allocator_cache*) new (addr) Allocator_cache (addr, sizeof_cache, old);
-  }
-
-void Allocator_cache :: destruct (Allocator_cache* cache)
-  { free (cache); }
-
-Allocator_cache :: Allocator_cache (char *addr, size_t sizeof_cache, Allocator_cache *old) :
-  start (addr + sizeof_this),
-  end (start + sizeof_cache),
-  previous (old),
-  cursor (start)
-  {  }
-
-
-Allocator_base :: ~Allocator_base()
-  {  }
 
 
 template <class Object>
@@ -202,11 +182,6 @@ void Allocator<Object> :: clear()
   }
 
 
-Generic_allocator :: Generic_allocator()
-  { cache = Allocator_cache::construct (cache_size); }
-Generic_allocator :: ~Generic_allocator()
-  { clear(); }
-
 template <class Object, class ... Args>
 Object& Generic_allocator :: create (Args&& ... args)
   {
@@ -221,6 +196,50 @@ Object& Generic_allocator :: create (Args&& ... args)
   cache->cursor += sizeof_wrapper + sizeof_obj;
   return *(Object*)tmp->obj_ptr();
   }
+
+
+template <class Obj, class ... Args>
+Obj_wrapper :: Obj_wrapper (Obj*, Args&& ... args) :
+  sizeof_obj (sizeof(Obj) + alignof (Obj)),
+  destructor_ptr (destructor_wrapper<Obj>)
+  {
+  // Check that the object's size is not bigger than what our size variable allows for
+  static_assert (sizeof(Obj) + alignof (Obj) <= std::numeric_limits<uint8_t>::max());
+  new (obj_ptr()) Obj (std::forward<Args>(args)...);
+  }
+
+
+// All non template functiond definitions are in this ifdef'd area.
+#ifdef ALLOCATOR_IMPLEMENTATION
+
+
+Allocator_cache* Allocator_cache :: construct (size_t sizeof_cache, Allocator_cache* old)
+  {
+  auto addr = (char*) malloc (sizeof_cache + sizeof_this);
+  
+  return (Allocator_cache*) new (addr) Allocator_cache (addr, sizeof_cache, old);
+  }
+
+void Allocator_cache :: destruct (Allocator_cache* cache)
+  { free (cache); }
+
+Allocator_cache :: Allocator_cache (char *addr, size_t sizeof_cache, Allocator_cache *old) :
+  start (addr + sizeof_this),
+  end (start + sizeof_cache),
+  previous (old),
+  cursor (start)
+  {  }
+
+
+Allocator_base :: ~Allocator_base()
+  {  }
+
+
+Generic_allocator :: Generic_allocator()
+  { cache = Allocator_cache::construct (cache_size); }
+
+Generic_allocator :: ~Generic_allocator()
+  { clear(); }
 
 void Generic_allocator :: clear()
   {
@@ -251,20 +270,14 @@ void Generic_allocator :: clear()
   cache->cursor = cache->start;
   }
 
-
-template <class Obj, class ... Args>
-Obj_wrapper :: Obj_wrapper (Obj*, Args&& ... args) :
-  sizeof_obj (sizeof(Obj) + alignof (Obj)),
-  destructor_ptr (destructor_wrapper<Obj>)
-  {
-  // Check that the object's size is not bigger than what our size variable allows for
-  static_assert (sizeof(Obj) + alignof (Obj) <= std::numeric_limits<uint8_t>::max());
-  new (obj_ptr()) Obj (std::forward<Args>(args)...);
-  }
-
 Obj_wrapper :: ~Obj_wrapper()
   {
   (*destructor_ptr) (obj_ptr());
   }
+
+void* Obj_wrapper :: obj_ptr()
+  { return (char*)this + sizeof(Obj_wrapper) + alignof(Obj_wrapper); }
+
+#endif
 
 #endif
