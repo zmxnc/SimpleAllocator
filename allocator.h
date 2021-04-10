@@ -81,7 +81,7 @@ class Allocator : public Allocator_base
   ~Allocator();
 
   template <class ... Args>
-  Object& create (Args&& ... args);
+  Object* create (Args&& ... args);
   void clear() override;
   };
 
@@ -133,7 +133,7 @@ class Generic_allocator : public Allocator_base
   ~Generic_allocator();
 
   template <class Object, class ... Args>
-  Object& create (Args&& ... args);
+  Object* create (Args&& ... args);
   void clear() override;
   };
 
@@ -150,7 +150,7 @@ Allocator<Object> :: ~Allocator()
 
 template <class Object>
 template <class ... Args>
-Object& Allocator<Object> :: create (Args&& ... args)
+Object* Allocator<Object> :: create (Args&& ... args)
   {
   if (sizeof_obj > cache_size)
     throw_or_abort (std::bad_alloc());
@@ -161,7 +161,7 @@ Object& Allocator<Object> :: create (Args&& ... args)
   // Placement new: allocates Object in place avoiding unnecessary memory movements
   auto tmp = new (cache->cursor) Object (std::forward<Args> (args)...);
   cache->cursor += sizeof_obj;
-  return (Object&)*tmp;
+  return tmp;
   }
 
 template <class Object>
@@ -192,7 +192,7 @@ void Allocator<Object> :: clear()
 
 
 template <class Object, class ... Args>
-Object& Generic_allocator :: create (Args&& ... args)
+Object* Generic_allocator :: create (Args&& ... args)
   {
   auto sizeof_obj     = sizeof(Object)      + alignof(Object);
   if (sizeof_wrapper + sizeof_obj > cache_size)
@@ -203,7 +203,7 @@ Object& Generic_allocator :: create (Args&& ... args)
   
   auto tmp = new (cache->cursor) Obj_wrapper ((Object*)nullptr, std::forward<Args> (args)...);
   cache->cursor += sizeof_wrapper + sizeof_obj;
-  return *(Object*)tmp->obj_ptr();
+  return (Object*)tmp->obj_ptr();
   }
 
 
@@ -213,7 +213,7 @@ Obj_wrapper :: Obj_wrapper (Obj*, Args&& ... args) :
   destructor_ptr (destructor_wrapper<Obj>)
   {
   // Check that the object's size is not bigger than what our size variable allows for
-  static_assert (sizeof(Obj) + alignof (Obj) <= std::numeric_limits<uint8_t>::max());
+  static_assert (sizeof(Obj) + alignof (Obj) <= std::numeric_limits<uint8_t>::max(), "Generic_allocator error: object exceeds maxiumum size");
   new (obj_ptr()) Obj (std::forward<Args>(args)...);
   }
 

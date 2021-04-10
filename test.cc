@@ -25,14 +25,14 @@ int main()
   // Test basic functionality on int
   {
   Allocator<int> allocator;
-  auto& a = allocator.create (1);
-  auto& b = allocator.create (2);
-  auto& c = allocator.create (5);
-  c = a + b;
+  auto a = allocator.create (1);
+  auto b = allocator.create (2);
+  auto c = allocator.create (5);
+  *c = *a + *b;
 
-  assert (a == 1);
-  assert (b == 2);
-  assert (c == (a+b));
+  assert (*a == 1);
+  assert (*b == 2);
+  assert (*c == (*a + *b));
   allocator.clear();
   cerr << "Basic test :             OK\n";
   }
@@ -40,11 +40,11 @@ int main()
   // Test that destructors are working properly
   {
   Allocator<TestObj> allocator;
-  auto& a = allocator.create();
-  auto& b = allocator.create();
+  auto a = allocator.create();
+  auto b = allocator.create();
 
-  assert (a.id == 1);
-  assert (b.id == 2);
+  assert (a->id == 1);
+  assert (b->id == 2);
   assert (TestObj::counter == 2);
   allocator.clear();
   assert (TestObj::counter == 0);
@@ -54,18 +54,18 @@ int main()
   // Test Generic_allocator
   {
   Generic_allocator allocator;
-  auto& a = allocator.create<TestObj>();
-  auto& b = allocator.create<int>(213123);
-  auto& c = allocator.create<TestObj>();
+  auto a = allocator.create<TestObj>();
+  auto b = allocator.create<int>(213123);
+  auto c = allocator.create<TestObj>();
 
-  assert (a.id == 1);
-  assert (b == 213123);
-  assert (c.id == 2);
+  assert (a->id == 1);
+  assert (*b == 213123);
+  assert (c->id == 2);
   assert (TestObj::counter == 2);
   allocator.clear();
   assert (TestObj::counter == 0);
   cerr << "Generic_allocator test : OK\n";
   }
-  
+
   return 0;
 }
